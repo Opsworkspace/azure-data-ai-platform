@@ -1,0 +1,31 @@
+# Runtime dependencies, pinned to compatible ranges.
+#
+# Pinned with ~= rather than ==: patch updates (security fixes) are picked up
+# on rebuild, minor/major updates are a deliberate change. Exact pinning of a
+# full dependency tree belongs in a lock file produced by pip-compile, which
+# is what a funded pipeline would generate and commit.
+
+fastapi~=0.115.0
+uvicorn[standard]~=0.32.0
+pydantic~=2.9.0
+pydantic-settings~=2.6.0
+
+# Azure SDK. Note what is NOT here: no azure-storage-blob key-based client,
+# no cosmos connection-string helper. Every client below authenticates with
+# DefaultAzureCredential.
+azure-identity~=1.19.0
+azure-cosmos~=4.9.0
+azure-storage-blob~=12.24.0
+azure-search-documents~=11.5.0
+azure-keyvault-secrets~=4.9.0
+openai~=1.57.0
+
+# Observability. OpenTelemetry is the vendor-neutral layer; the Azure Monitor
+# exporter is the only Azure-specific piece, which keeps a future move to a
+# different backend a one-line change.
+opentelemetry-api~=1.29.0
+opentelemetry-sdk~=1.29.0
+opentelemetry-instrumentation-fastapi~=0.50b0
+azure-monitor-opentelemetry~=1.6.0
+
+structlog~=24.4.0
