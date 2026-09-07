@@ -1,0 +1,58 @@
+{
+  "properties": {
+    "displayName": "Audit resources without diagnostic settings sent to Log Analytics",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "A resource whose logs are not collected is a resource you cannot debug and cannot audit. This is Audit rather than DeployIfNotExists deliberately: automatically enabling every log category on every resource is a reliable way to multiply an ingestion bill overnight. The correct response to a finding here is a considered decision about WHICH categories matter, which is what each Terraform module already encodes.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Monitoring",
+      "rationale": "Audit-only on purpose. See docs/architecture/07-observability.md on the cost of indiscriminate log collection."
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "allowedValues": ["AuditIfNotExists", "Disabled"],
+        "defaultValue": "AuditIfNotExists",
+        "metadata": { "displayName": "Effect" }
+      },
+      "logAnalyticsWorkspaceId": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Log Analytics workspace resource id",
+          "strongType": "omsWorkspace"
+        },
+        "defaultValue": ""
+      }
+    },
+    "policyRule": {
+      "if": {
+        "field": "type",
+        "in": [
+          "Microsoft.ContainerService/managedClusters",
+          "Microsoft.DocumentDB/databaseAccounts",
+          "Microsoft.KeyVault/vaults",
+          "Microsoft.Storage/storageAccounts",
+          "Microsoft.Network/azureFirewalls",
+          "Microsoft.Databricks/workspaces",
+          "Microsoft.CognitiveServices/accounts",
+          "Microsoft.Search/searchServices"
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]",
+        "details": {
+          "type": "Microsoft.Insights/diagnosticSettings",
+          "existenceCondition": {
+            "allOf": [
+              {
+                "field": "Microsoft.Insights/diagnosticSettings/workspaceId",
+                "notEquals": ""
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

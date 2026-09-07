@@ -1,0 +1,63 @@
+{
+  "properties": {
+    "displayName": "Deny public IP addresses on virtual machines and scale sets",
+    "policyType": "Custom",
+    "mode": "All",
+    "description": "No compute resource in this platform may have a public IP. Interactive access is through Azure Bastion; outbound traffic is through the hub firewall; inbound traffic is through Front Door. A public IP on a VM or node pool bypasses all three of those controls at once, and is almost always created as a temporary debugging convenience that is never removed.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Network",
+      "rationale": "See docs/architecture/03-network-topology.md. This is the policy that makes 'no public IPs' a property of the subscription rather than a property of the Terraform."
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Start at Audit. Promote to Deny once the compliance report is clean."
+        },
+        "allowedValues": ["Audit", "Deny", "Disabled"],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.Network/networkInterfaces"
+              },
+              {
+                "count": {
+                  "field": "Microsoft.Network/networkInterfaces/ipConfigurations[*]",
+                  "where": {
+                    "field": "Microsoft.Network/networkInterfaces/ipConfigurations[*].publicIpAddress.id",
+                    "exists": "true"
+                  }
+                },
+                "greater": 0
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "field": "type",
+                "equals": "Microsoft.Compute/virtualMachineScaleSets"
+              },
+              {
+                "field": "Microsoft.Compute/virtualMachineScaleSets/virtualMachineProfile.networkProfile.networkInterfaceConfigurations[*].ipConfigurations[*].publicIPAddressConfiguration",
+                "exists": "true"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

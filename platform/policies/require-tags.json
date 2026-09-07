@@ -1,0 +1,59 @@
+{
+  "properties": {
+    "displayName": "Require the platform standard tag set",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Every resource must carry the six standard tags. Untagged resources are the single largest source of unattributable cloud spend: at the end of the quarter nobody can say whose budget they belong to, and nobody will claim them. The tags are also what Azure Policy exemptions, cost views and automated shutdown target.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Tags",
+      "rationale": "See infra/terraform/modules/naming/README.md for what each tag answers."
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "allowedValues": ["Audit", "Deny", "Disabled"],
+        "defaultValue": "Audit",
+        "metadata": { "displayName": "Effect" }
+      },
+      "requiredTags": {
+        "type": "Array",
+        "defaultValue": [
+          "environment",
+          "workload",
+          "owner",
+          "cost_center",
+          "data_classification",
+          "managed_by"
+        ],
+        "metadata": {
+          "displayName": "Required tag names"
+        }
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "value": "[length(parameters('requiredTags'))]",
+            "greater": 0
+          },
+          {
+            "count": {
+              "value": "[parameters('requiredTags')]",
+              "name": "tagName",
+              "where": {
+                "value": "[empty(field(concat('tags[', current('tagName'), ']')))]",
+                "equals": true
+              }
+            },
+            "greater": 0
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

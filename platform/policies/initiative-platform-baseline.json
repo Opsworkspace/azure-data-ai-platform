@@ -1,0 +1,58 @@
+{
+  "properties": {
+    "displayName": "Purple platform baseline",
+    "policyType": "Custom",
+    "description": "The minimum set of guard rails for any subscription hosting this platform. Assign at subscription scope. Every policy defaults to its non-blocking effect so the initiative can be assigned to an existing subscription without breaking anyone's next deployment; tighten to Deny once the compliance report is clean.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Platform",
+      "rolloutOrder": "Assign with all effects at Audit. Read the compliance report. Remediate. Then flip effects to Deny one at a time, watching for legitimate workloads that break."
+    },
+    "parameters": {
+      "networkEffect": {
+        "type": "String",
+        "allowedValues": ["Audit", "Deny", "Disabled"],
+        "defaultValue": "Audit",
+        "metadata": {
+          "displayName": "Effect for network isolation policies"
+        }
+      },
+      "tagEffect": {
+        "type": "String",
+        "allowedValues": ["Audit", "Deny", "Disabled"],
+        "defaultValue": "Audit",
+        "metadata": {
+          "displayName": "Effect for the tagging policy"
+        }
+      }
+    },
+    "policyDefinitions": [
+      {
+        "policyDefinitionReferenceId": "denyPublicIp",
+        "policyDefinitionId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/policyDefinitions/deny-public-ip",
+        "parameters": {
+          "effect": { "value": "[parameters('networkEffect')]" }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "denyPublicNetworkAccess",
+        "policyDefinitionId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/policyDefinitions/deny-public-network-access",
+        "parameters": {
+          "effect": { "value": "[parameters('networkEffect')]" }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "requireTags",
+        "policyDefinitionId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/policyDefinitions/require-tags",
+        "parameters": {
+          "effect": { "value": "[parameters('tagEffect')]" }
+        }
+      },
+      {
+        "policyDefinitionReferenceId": "auditDiagnosticSettings",
+        "policyDefinitionId": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Authorization/policyDefinitions/audit-diagnostic-settings",
+        "parameters": {}
+      }
+    ]
+  }
+}

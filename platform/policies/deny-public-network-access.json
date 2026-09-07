@@ -1,0 +1,86 @@
+{
+  "properties": {
+    "displayName": "Require public network access to be disabled on PaaS data services",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Storage accounts, Key Vaults, Cosmos accounts, container registries, AI Search services and Cognitive Services accounts must all have public network access disabled. Every one of them is reached through a private endpoint. This policy is the reason a resource created outside Terraform cannot quietly become the platform's one internet-facing data store.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Network",
+      "rationale": "A firewall rule that allows 0.0.0.0/0 and a disabled public endpoint look similar in a review and are completely different in effect. This policy checks the property that actually matters."
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "allowedValues": ["Audit", "Deny", "Disabled"],
+        "defaultValue": "Audit",
+        "metadata": {
+          "displayName": "Effect"
+        }
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.Storage/storageAccounts" },
+              {
+                "field": "Microsoft.Storage/storageAccounts/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.KeyVault/vaults" },
+              {
+                "field": "Microsoft.KeyVault/vaults/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.DocumentDB/databaseAccounts" },
+              {
+                "field": "Microsoft.DocumentDB/databaseAccounts/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.ContainerRegistry/registries" },
+              {
+                "field": "Microsoft.ContainerRegistry/registries/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.Search/searchServices" },
+              {
+                "field": "Microsoft.Search/searchServices/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              { "field": "type", "equals": "Microsoft.CognitiveServices/accounts" },
+              {
+                "field": "Microsoft.CognitiveServices/accounts/publicNetworkAccess",
+                "notEquals": "Disabled"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}
