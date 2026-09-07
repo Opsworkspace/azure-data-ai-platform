@@ -1,0 +1,43 @@
+# gitleaks configuration
+#
+# The default ruleset is extended, not replaced, so every upstream detector
+# stays active. The allowlist below exists only to stop the scanner tripping
+# over deliberate, well-known placeholder values.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "azure-subscription-or-tenant-guid"
+description = "A GUID that looks like a real Azure subscription or tenant id"
+regex = '''(?i)(subscription_id|tenant_id|client_id|object_id|principal_id)\s*[:=]\s*"?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"?'''
+tags = ["azure", "identifier"]
+
+[[rules]]
+id = "azure-storage-connection-string"
+description = "Azure Storage account connection string"
+regex = '''DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{40,}'''
+tags = ["azure", "secret"]
+
+[[rules]]
+id = "databricks-pat"
+description = "Databricks personal access token"
+regex = '''dapi[0-9a-f]{32}'''
+tags = ["databricks", "secret"]
+
+[allowlist]
+description = "Deliberate placeholders used throughout this blueprint"
+regexes = [
+  # All-zero GUID: the canonical placeholder in this repo.
+  '''00000000-0000-0000-0000-000000000000''',
+  # Documentation-only example GUIDs, always prefixed to signal intent.
+  '''(?i)EXAMPLE-[0-9a-f-]+''',
+  # RFC 2606 reserved documentation domains.
+  '''[a-z0-9.-]+\.(example|invalid|test|localhost)(\.com)?''',
+  # GitHub noreply commit identity.
+  '''[0-9]+\+[a-z0-9-]+@users\.noreply\.github\.com''',
+]
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''docs/00-safety-and-placeholders\.md$''',
+]

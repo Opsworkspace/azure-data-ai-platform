@@ -1,0 +1,91 @@
+# Python tooling configuration for the whole repository.
+#
+# One file rather than per-package configs: the API, the worker and the
+# Databricks notebooks are linted by the same rules, because they are
+# maintained by the same people and reviewed in the same pull requests.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "N",    # pep8 naming
+    "UP",   # pyupgrade — keep syntax current with the target version
+    "B",    # flake8-bugbear — real bug patterns, not style
+    "BLE",  # blind except — allowed only with an explicit, justified noqa
+    "S",    # flake8-bandit — security issues
+    "A",    # shadowing builtins
+    "C4",   # comprehension simplifications
+    "DTZ",  # naive datetimes: a timestamp without a timezone is a bug waiting
+    "T20",  # no print() in library code — use the logger
+    "SIM",  # simplifications
+    "ARG",  # unused arguments
+    "PTH",  # prefer pathlib
+    "RUF",
+]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use assert, which bandit flags as S101.
+"services/tests/*" = ["S101", "ARG001"]
+# Databricks notebooks are a genuinely different execution environment, and
+# each of these suppressions is a deliberate judgement rather than noise:
+#
+#   T20   print() and display() ARE the output mechanism in a notebook.
+#   F821  `spark`, `dbutils` and `display` are injected by the Databricks
+#         runtime and are undefined to a static analyser.
+#   E402  Imports follow the `# COMMAND ----------` cell markers, so they are
+#         legitimately not all at the top of the file.
+#   N812  `from pyspark.sql import functions as F` is the universal PySpark
+#         convention. Renaming it would make every example unreadable.
+#   S608  Flags f-string SQL as injection. Here the interpolated values are
+#         table names from job parameters set by the platform, never user
+#         input — and Spark SQL has no parameter binding for identifiers, so
+#         interpolation is the only way to write a dynamic table name. The
+#         genuine user-input filter is in the API, where it IS escaped:
+#         see services/api/purple_api/rag.py and its regression tests.
+"data/databricks/notebooks/*" = ["T20", "F821", "E402", "N812", "S608"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency injection is expressed as a call in an argument
+# default. That is the framework's documented API, not the mutable-default
+# bug B008 exists to catch.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["purple_api", "purple_worker"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+
+# The Azure SDK ships incomplete type stubs for several packages. Rather than
+# disabling type checking globally, the gap is narrowed to the specific
+# modules that lack stubs — so a missing annotation in OUR code is still an
+# error.
+[[tool.mypy.overrides]]
+module = [
+    "azure.*",
+    "opentelemetry.*",
+    "structlog.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["services/tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"

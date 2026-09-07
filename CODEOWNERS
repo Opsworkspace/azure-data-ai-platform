@@ -1,0 +1,8 @@
+# Every change is reviewed by the platform team.
+# In a real organisation these would be Entra-backed GitHub teams, e.g.
+#   /infra/terraform/  @Opsworkspace/platform-infra
+#   /data/databricks/  @Opsworkspace/data-platform
+#   /services/         @Opsworkspace/app-eng
+# Until those teams exist, ownership is org-wide.
+
+*                     @Opsworkspace/admins

@@ -1,0 +1,78 @@
+# ---- Terraform ----
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+# Never commit real variable values: they carry subscription/tenant IDs.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.terraform.lock.hcl.bak
+tfplan
+*.tfplan
+plan.out
+plan.json
+
+# ---- Backend / credentials ----
+backend.hcl
+*.auto.tfvars
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.publishsettings
+azureauth.json
+kubeconfig
+*.kubeconfig
+.azure/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# ---- Node / tooling ----
+node_modules/
+
+# ---- Editors / OS ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Local scratch ----
+scratch/
+tmp/
+*.local.*
+
+# ---- Private study notes ----
+# Personal learning notes live OUTSIDE this repository, in
+# ~/Desktop/azure-platform-study-notes/. These patterns are a safety net in
+# case anything is ever created in-tree by mistake: this repository presents
+# finished engineering, and study material framed as a curriculum sends the
+# wrong signal about what it is.
+learning-path/
+study-notes/
+notes/
+*.notes.md
