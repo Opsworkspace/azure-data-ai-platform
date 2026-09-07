@@ -1,0 +1,89 @@
+name: validate
+
+# Credential-free by design. This workflow has no access to any Azure identity,
+# which is what mechanically prevents it from planning or applying anything.
+# See docs/00-safety-and-placeholders.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: "1.9.8"
+
+jobs:
+  terraform:
+    name: terraform fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Check canonical formatting
+        run: terraform fmt -recursive -check -diff infra/
+
+      - name: Initialise and validate every Terraform directory
+        run: |
+          set -euo pipefail
+          # -backend=false: never contacts a remote state backend, so no
+          # credentials are needed and no state can be read or written.
+          mapfile -t dirs < <(find infra/terraform -type f -name '*.tf' \
+            -exec dirname {} \; | sort -u)
+          for d in "${dirs[@]}"; do
+            echo "::group::$d"
+            terraform -chdir="$d" init -backend=false -input=false -no-color
+            terraform -chdir="$d" validate -no-color
+            echo "::endgroup::"
+          done
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - run: tflint --init
+      - run: tflint --recursive --minimum-failure-severity=warning --format compact
+
+  python:
+    name: ruff + mypy + pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/requirements-dev.txt
+      - run: ruff check services/ data/
+      - run: ruff format --check services/ data/
+      - run: mypy services/
+      - run: pytest services/ -q
+
+  kubernetes:
+    name: kube-linter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: stackrox/kube-linter-action@v1
+        with:
+          directory: platform/kubernetes
+          config: .kube-linter.yaml
