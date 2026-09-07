@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored: it carries tenancy identifiers.
+
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+resource_group_name  = "purple-tfstate-rg"
+storage_account_name = "purpletfstateCHANGEME"
+location             = "eastus2"
+owner                = "platform-team@example.com"

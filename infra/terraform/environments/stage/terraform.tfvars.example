@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and supply real values.
+# terraform.tfvars is gitignored: it carries tenancy identifiers.
+#
+# These four values are the ONLY things standing between this repository and a
+# real deployment. Everything else is already decided in code.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+# Entra group object ids, not user ids. A person who leaves the team should
+# lose cluster access by leaving the group.
+platform_admin_group_object_ids = [
+  "00000000-0000-0000-0000-000000000000",
+]
+
+alert_email_receivers = ["platform-oncall@example.com"]
+custom_domain         = "api.purple.example.com"
+cost_center           = "CC-0000-PLATFORM"
