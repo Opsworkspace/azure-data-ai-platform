@@ -1,0 +1,77 @@
+# kube-linter configuration.
+#
+# Run against the RENDERED output of a Kustomize overlay, never against the
+# base. The base carries placeholders that an overlay replaces, so linting it
+# reports problems that exist in nothing that would ever be applied.
+#
+#   kustomize build platform/kubernetes/overlays/prod | kube-linter lint -
+
+checks:
+  # Start from the recommended set rather than enumerating everything, so new
+  # upstream checks are picked up automatically rather than silently missed.
+  addAllBuiltIn: false
+  doNotAutoAddDefaults: false
+
+  include:
+    # --- security -----------------------------------------------------------
+    - run-as-non-root
+    - privileged-container
+    - privilege-escalation-container
+    - no-read-only-root-fs
+    - drop-net-raw-capability
+    - host-network
+    - host-pid
+    - host-ipc
+    - sensitive-host-mounts
+    - unsafe-proc-mount
+    - unsafe-sysctls
+
+    # --- reliability --------------------------------------------------------
+    - unset-cpu-requirements
+    - unset-memory-requirements
+    - no-liveness-probe
+    - no-readiness-probe
+    - pdb-max-unavailable
+    - pdb-min-available
+
+    # --- correctness --------------------------------------------------------
+    - dangling-service
+    - mismatching-selector
+    - non-existent-service-account
+    - duplicate-env-var
+    - invalid-target-ports
+
+    # --- supply chain -------------------------------------------------------
+    - latest-tag
+    - required-label-owner
+
+  exclude:
+    # The worker serves no traffic, so a readiness probe on it would be
+    # meaningless ceremony. The check cannot express "unless it is a queue
+    # consumer", so it is excluded and the reasoning lives in
+    # platform/kubernetes/base/worker-deployment.yaml.
+    - no-readiness-probe
+
+    # unset-cpu-requirements flags a missing CPU *limit* as well as a missing
+    # request. The platform sets requests and deliberately omits limits: a CPU
+    # limit is enforced by CFS quota and throttles a latency-sensitive service
+    # even on an idle node, producing exactly the tail-latency spikes the p99
+    # SLO is measured on. The full reasoning is in
+    # platform/kubernetes/base/api-deployment.yaml.
+    #
+    # Memory limits ARE set and ARE required — memory is incompressible.
+    - unset-cpu-requirements
+
+customChecks:
+  - name: require-workload-identity-label
+    description: >-
+      Pods using a non-default service account must carry
+      azure.workload.identity/use=true, or the webhook never projects the token
+      and every Azure call fails authentication at runtime.
+    template: required-label
+    params:
+      key: azure.workload.identity/use
+      value: "true"
+    scope:
+      objectKinds:
+        - DeploymentLike
