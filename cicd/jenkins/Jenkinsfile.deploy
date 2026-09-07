@@ -1,0 +1,187 @@
+// ---------------------------------------------------------------------------
+// Deployment pipeline — DISABLED.
+//
+// This file documents the shape of a real deployment pipeline. It aborts in
+// its first stage and cannot be made to run by changing a parameter.
+//
+// It is here because the deployment pipeline is where most of the interesting
+// platform engineering decisions live — approval gates, progressive rollout,
+// automated rollback — and omitting it entirely would leave the biggest part
+// of "CI/CD" undocumented.
+//
+// See docs/00-safety-and-placeholders.md for why nothing here can deploy.
+// ---------------------------------------------------------------------------
+
+@Library('purple-platform@main') _
+
+pipeline {
+    agent { label 'linux && azure && vnet-attached' }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '100'))
+        timeout(time: 2, unit: 'HOURS')
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'stage', 'prod'], description: 'Target')
+        string(name: 'IMAGE_DIGEST', defaultValue: '', description: 'sha256 digest to deploy')
+        booleanParam(name: 'SKIP_CANARY', defaultValue: false, description: 'Emergency only')
+    }
+
+    stages {
+        stage('SAFETY GUARD') {
+            steps {
+                script {
+                    error('''
+                        =========================================================
+                        THIS PIPELINE IS DISABLED.
+
+                        This repository is a reference blueprint. It holds no
+                        cloud credentials and must never deploy anything.
+
+                        Everything below this stage is documentation of what a
+                        real deployment pipeline would do, and is unreachable.
+                        =========================================================
+                    '''.stripIndent())
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Everything below is unreachable. Read it as documentation.
+        // ------------------------------------------------------------------
+
+        stage('Authenticate') {
+            steps {
+                echo '''
+                    Workload identity federation, not a stored secret.
+
+                    The Jenkins agent runs on a VM or in a pod with a managed
+                    identity. `az login --identity` acquires a token; no
+                    credential is stored in the Jenkins credentials store, so
+                    a compromised controller yields nothing reusable.
+
+                    This is the single most valuable change a Jenkins-based
+                    Azure pipeline can make. The common alternative — a service
+                    principal client secret in the credentials store — is a
+                    long-lived credential with subscription-wide access, held
+                    by a system with a large plugin attack surface.
+                '''.stripIndent()
+            }
+        }
+
+        stage('Terraform plan') {
+            steps {
+                echo '''
+                    terraform plan -detailed-exitcode -out=tfplan
+
+                    -detailed-exitcode returns:
+                      0 = no changes        -> skip apply entirely
+                      1 = error             -> fail
+                      2 = changes present   -> proceed to approval
+
+                    Exit code 0 is the useful one: it lets the pipeline skip
+                    the approval gate when nothing would change, which stops
+                    approvers being asked to rubber-stamp no-op deployments.
+                    An approver who approves twenty no-ops stops reading the
+                    twenty-first.
+
+                    The plan is saved as a FILE and applied later. Applying a
+                    saved plan guarantees that what was approved is what runs;
+                    re-planning at apply time means approving one thing and
+                    applying another.
+                '''.stripIndent()
+            }
+        }
+
+        stage('Approval') {
+            when { expression { params.ENVIRONMENT == 'prod' } }
+            steps {
+                echo '''
+                    input message: 'Apply this plan to PRODUCTION?',
+                          submitter: 'platform-approvers',
+                          parameters: [text(name: 'REASON', description: 'Change ticket')]
+
+                    Three properties make this gate meaningful rather than
+                    ceremonial:
+
+                    * `submitter` restricts WHO can approve. Without it, anyone
+                      with Jenkins access can approve their own change.
+                    * The plan output is shown in the console above the prompt,
+                      so the approver sees exactly what will change.
+                    * A reason is captured, tying the deployment to a ticket.
+
+                    Note also the `timeout` on the pipeline: an approval that
+                    is never answered must not hold an executor forever.
+                '''.stripIndent()
+            }
+        }
+
+        stage('Terraform apply') {
+            steps {
+                // docs-only: this is an echo, not an invocation. The stage is
+                // unreachable — the SAFETY GUARD stage aborts the build first.
+                echo 'terraform apply -auto-approve tfplan   (the SAVED plan)'  // docs-only
+            }
+        }
+
+        stage('Canary deploy') {
+            when { expression { !params.SKIP_CANARY } }
+            steps {
+                echo '''
+                    Route 5% of traffic to the new version for 15 minutes and
+                    watch the SLO burn rate.
+
+                    The critical part is not the canary itself — it is the
+                    AUTOMATED ANALYSIS. A canary that a human eyeballs is a
+                    canary that gets approved at 5pm on a Friday because the
+                    graph "looked fine". The pipeline should query the error
+                    rate and p99 latency for the canary pods specifically, and
+                    roll back automatically if either exceeds the baseline.
+
+                    Flagger or Argo Rollouts implement this properly. Both
+                    integrate with the Prometheus workspace this platform
+                    already runs.
+                '''.stripIndent()
+            }
+        }
+
+        stage('Progressive rollout') {
+            steps {
+                echo '''
+                    5% -> 25% -> 50% -> 100%, with an analysis gate between
+                    each step.
+
+                    kubectl rollout status --timeout=10m is the safety net: it
+                    fails the stage if pods do not become Ready, rather than
+                    reporting success on a rollout that is silently stuck in
+                    ImagePullBackOff.
+                '''.stripIndent()
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo '''
+                Automatic rollback.
+
+                `kubectl rollout undo` returns to the previous ReplicaSet.
+
+                What it does NOT undo is the Terraform apply. That asymmetry is
+                the hardest problem in infrastructure delivery: a Kubernetes
+                deployment is trivially reversible, and a database schema
+                migration or a deleted resource is not.
+
+                The discipline that makes it manageable is EXPANSIVE CHANGES —
+                every change is backward-compatible with the previous version
+                for at least one release. Add a column, do not rename one.
+                Deploy code that reads both shapes, then migrate, then remove
+                the old path. Three deployments instead of one, and every step
+                is reversible.
+            '''.stripIndent()
+        }
+    }
+}

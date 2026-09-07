@@ -1,0 +1,169 @@
+// ---------------------------------------------------------------------------
+// Image build pipeline.
+//
+// Builds the API and worker images, scans them, and — in a funded environment
+// — would push them to ACR. The push step is present and disabled: pushing
+// requires a registry credential, and no pipeline in this repository holds one.
+//
+// The supply-chain sequence here matters and is worth reading in order:
+//   build -> scan -> sign -> push -> generate SBOM
+//
+// Scanning BEFORE pushing is the part teams get backwards. Scan after push and
+// the vulnerable image is already in the registry, already pullable, and
+// removing it is a race against whatever might have pulled it. Scan first and
+// a failing image never exists anywhere but the build agent.
+// ---------------------------------------------------------------------------
+
+@Library('purple-platform@main') _
+
+pipeline {
+    agent { label 'linux && docker' }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '50'))
+        timeout(time: 45, unit: 'MINUTES')
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'stage', 'prod'],
+            description: 'Which environment tag to build for.'
+        )
+        booleanParam(
+            name: 'PUSH_IMAGE',
+            defaultValue: false,
+            description: 'DISABLED. This repository holds no registry credentials.'
+        )
+    }
+
+    environment {
+        // In a funded environment: from Terraform outputs.
+        REGISTRY = 'PLACEHOLDER.azurecr.io'
+
+        // The immutable version. Git SHA, not a build number: a build number
+        // is meaningless outside this Jenkins instance, and is not reproducible
+        // if the controller is rebuilt. A SHA identifies exactly one tree.
+        IMAGE_TAG = "${env.GIT_COMMIT?.take(12) ?: 'unknown'}"
+    }
+
+    stages {
+        stage('Build images') {
+            parallel {
+                stage('API') {
+                    steps {
+                        script {
+                            buildContainerImage(
+                                name: 'purple-api',
+                                dockerfile: 'services/api/Dockerfile',
+                                context: '.',
+                                tag: env.IMAGE_TAG
+                            )
+                        }
+                    }
+                }
+                stage('Worker') {
+                    steps {
+                        script {
+                            buildContainerImage(
+                                name: 'purple-worker',
+                                dockerfile: 'services/worker/Dockerfile',
+                                context: '.',
+                                tag: env.IMAGE_TAG
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Scan images') {
+            steps {
+                script {
+                    // Fails the build on HIGH or CRITICAL. That threshold is a
+                    // real policy decision: fail on MEDIUM and the pipeline is
+                    // red permanently, because base images always carry some
+                    // medium findings with no available fix. A permanently red
+                    // pipeline is a pipeline nobody reads.
+                    //
+                    // `ignore-unfixed` is the other half: a CVE with no patch
+                    // available cannot be actioned by this build, and blocking
+                    // on it just stops deployments of the FIX for something else.
+                    ['purple-api', 'purple-worker'].each { image ->
+                        sh """
+                            trivy image \
+                              --severity HIGH,CRITICAL \
+                              --ignore-unfixed \
+                              --exit-code 1 \
+                              --format table \
+                              ${image}:${IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Generate SBOM') {
+            steps {
+                script {
+                    // A Software Bill of Materials: every package in the image,
+                    // with its version. When the next Log4Shell lands, the
+                    // question "are we affected" is answered by grepping SBOMs
+                    // in seconds rather than by rebuilding and inspecting every
+                    // image over a weekend.
+                    ['purple-api', 'purple-worker'].each { image ->
+                        sh """
+                            trivy image --format cyclonedx \
+                              --output ${image}-sbom.json \
+                              ${image}:${IMAGE_TAG}
+                        """
+                    }
+                    archiveArtifacts artifacts: '*-sbom.json', fingerprint: true
+                }
+            }
+        }
+
+        stage('Push to registry') {
+            when {
+                // Two guards, and the second is the one that matters. Even if
+                // someone sets PUSH_IMAGE to true, `NEVER_TRUE` is a constant
+                // that keeps this stage unreachable.
+                allOf {
+                    expression { params.PUSH_IMAGE }
+                    expression { env.NEVER_TRUE == 'true' }
+                }
+            }
+            steps {
+                echo '''
+                    ===================================================
+                    DISABLED BY DESIGN.
+
+                    This repository holds no registry credentials, so no
+                    pipeline in it can push an image. See
+                    docs/00-safety-and-placeholders.md, Rule 1.
+
+                    In a funded environment this stage would:
+                      1. Authenticate to ACR with a federated workload
+                         identity — no stored secret.
+                      2. Sign the image with Notation and a key held in
+                         Key Vault, so the cluster can verify provenance
+                         via an admission policy.
+                      3. Push both the image and its signature.
+                      4. Push the SBOM as an OCI referrer artefact.
+                    ===================================================
+                '''.stripIndent()
+            }
+        }
+    }
+
+    post {
+        always {
+            // Images accumulate on the agent and fill its disk. This is the
+            // Jenkins equivalent of a container registry retention policy.
+            sh 'docker image prune -f --filter "until=24h" || true'
+            cleanWs()
+        }
+    }
+}

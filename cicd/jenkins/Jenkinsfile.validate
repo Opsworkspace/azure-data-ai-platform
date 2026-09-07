@@ -1,0 +1,168 @@
+// ---------------------------------------------------------------------------
+// Validation pipeline — the credential-free checks.
+//
+// Deliberately mirrors .github/workflows/validate.yml. Running both means a
+// change is validated identically regardless of which system triggered it,
+// and it makes the comparison between the two concrete.
+//
+// DECLARATIVE pipeline syntax, not scripted. Declarative is more constrained —
+// a fixed structure of stages, steps and post-conditions — and that constraint
+// is the point: it is readable by someone who does not know Groovy, and it
+// gives you `post` blocks, `options`, and parallel stages for free. Scripted
+// pipelines are arbitrary Groovy, which means arbitrary complexity.
+// ---------------------------------------------------------------------------
+
+@Library('purple-platform@main') _
+
+pipeline {
+    // `agent none` at the top, with a per-stage agent below. This stops the
+    // pipeline from holding an executor while it waits for anything, which on
+    // a busy controller is the difference between a queue that drains and one
+    // that deadlocks.
+    agent none
+
+    options {
+        // Without this, a Jenkins controller accumulates build history until
+        // its disk fills. That is a real and common outage.
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+
+        // Do not check out the repository automatically on every agent. Each
+        // stage decides, which avoids a redundant clone in stages that need no
+        // source.
+        skipDefaultCheckout(true)
+
+        // A new commit supersedes an in-flight build of the same branch.
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    environment {
+        TERRAFORM_VERSION = '1.9.8'
+        PYTHON_VERSION = '3.12'
+        // Shared across stages so ~20 provider downloads become one.
+        TF_PLUGIN_CACHE_DIR = "${WORKSPACE}/.terraform-plugin-cache"
+        // Never colour or prompt in CI.
+        TF_IN_AUTOMATION = 'true'
+        TF_INPUT = 'false'
+    }
+
+    stages {
+        stage('Checkout') {
+            agent { label 'linux && docker' }
+            steps {
+                checkout scm
+                // Stash rather than re-cloning on every parallel agent. On a
+                // large repository this is significantly faster and reduces
+                // load on the git server.
+                stash name: 'source', includes: '**', excludes: '.git/**'
+            }
+        }
+
+        stage('Static checks') {
+            // Parallel because these are independent and the pipeline is only
+            // as slow as its longest stage. Serially this is ~12 minutes;
+            // in parallel it is ~5.
+            parallel {
+                stage('Terraform') {
+                    agent { label 'linux && terraform' }
+                    steps {
+                        unstash 'source'
+                        script {
+                            terraformValidate(
+                                version: env.TERRAFORM_VERSION,
+                                directory: 'infra/terraform'
+                            )
+                        }
+                    }
+                }
+
+                stage('Python') {
+                    agent { label 'linux && python' }
+                    steps {
+                        unstash 'source'
+                        sh '''
+                            set -euo pipefail
+                            python -m venv .venv
+                            . .venv/bin/activate
+                            pip install --quiet --upgrade pip
+                            pip install --quiet -r services/requirements-dev.txt
+
+                            ruff check services/ data/
+                            ruff format --check services/ data/
+                            mypy services/
+                            pytest services/ -q --junitxml=pytest-results.xml
+                        '''
+                    }
+                    post {
+                        always {
+                            // Publish results even when the stage fails —
+                            // especially when it fails, since that is when
+                            // someone needs to see which test broke.
+                            junit allowEmptyResults: true, testResults: 'pytest-results.xml'
+                        }
+                    }
+                }
+
+                stage('Kubernetes') {
+                    agent { label 'linux && kubectl' }
+                    steps {
+                        unstash 'source'
+                        sh '''
+                            set -euo pipefail
+                            # An overlay that does not build is a deployment
+                            # that fails at apply time, in production.
+                            for overlay in platform/kubernetes/overlays/*/; do
+                                echo "==> ${overlay}"
+                                kustomize build "${overlay}" > /dev/null
+                            done
+
+                            kustomize build platform/kubernetes/overlays/prod \
+                              | kube-linter lint - --config .kube-linter.yaml
+                        '''
+                    }
+                }
+
+                stage('Security') {
+                    agent { label 'linux && docker' }
+                    steps {
+                        unstash 'source'
+                        script {
+                            securityScan(
+                                terraformDir: 'infra/terraform',
+                                failOn: 'HIGH,CRITICAL'
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Placeholder guard') {
+            agent { label 'linux' }
+            steps {
+                unstash 'source'
+                // The check that keeps this repository publishable: no real
+                // GUIDs, no personal email addresses, and no invocation of
+                // the Terraform apply command anywhere in a pipeline.
+                sh 'bash tools/check_placeholders.sh'
+            }
+        }
+    }
+
+    post {
+        failure {
+            // Notification, not a deployment action. This pipeline has no
+            // credentials and can take no action against Azure.
+            echo 'Validation failed. No deployment is possible from this repository in any case.'
+        }
+        cleanup {
+            node('linux') {
+                // Workspaces are the other way a Jenkins agent fills its disk.
+                cleanWs()
+            }
+        }
+    }
+}
