@@ -1,0 +1,199 @@
+# ---------------------------------------------------------------------------
+# The ingestion worker.
+#
+# Contrast this with the API deployment — the differences are all consequences
+# of one fact: the worker serves no traffic.
+#
+#   * Runs on SPOT nodes. Up to 90% cheaper, evictable with 30s notice, which
+#     the worker handles by finishing its current chunk and stopping.
+#   * NO readiness probe. There is no traffic to be ready for. Adding one
+#     would be meaningless ceremony.
+#   * NO Service, no HPA on CPU. It scales on QUEUE DEPTH, which is the only
+#     honest signal for a queue consumer — CPU utilisation of a worker waiting
+#     on I/O tells you nothing about whether the backlog is growing.
+#   * Longer termination grace period: an in-flight embedding batch takes
+#     longer to finish than an HTTP request.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: purple-worker
+  namespace: purple
+  labels:
+    app.kubernetes.io/name: purple-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: purple
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: purple-worker
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Unlike the API, the worker CAN lose capacity briefly: unacknowledged
+      # messages simply stay in the queue. Allowing one unavailable makes
+      # rollouts faster and needs no surge headroom on a spot pool where
+      # capacity is not guaranteed.
+      maxUnavailable: 1
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: purple-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: purple
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: purple-worker
+      automountServiceAccountToken: false
+
+      # Longer than the API's 45s. An embedding batch of 32 chunks can take
+      # 20-30 seconds against a throttled model deployment, and being killed
+      # mid-batch leaves a document partially indexed — visible to search but
+      # incomplete, which is worse than not indexed at all.
+      terminationGracePeriodSeconds: 120
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Run on spot nodes. The toleration permits it; the nodeSelector
+      # requires it. Both are needed: a toleration alone would allow the pod
+      # onto spot nodes without preferring them.
+      nodeSelector:
+        workload-type: batch
+      tolerations:
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+
+      # Spread across zones so a zone loss does not stop ingestion entirely.
+      # ScheduleAnyway rather than DoNotSchedule: spot capacity is not
+      # guaranteed to exist in every zone, and a worker that cannot schedule
+      # is worse than a worker in the wrong zone.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: purple-worker
+
+      containers:
+        - name: worker
+          image: PLACEHOLDER.azurecr.io/purple-worker:latest
+          imagePullPolicy: IfNotPresent
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              # Higher memory than the API: the worker holds a batch of chunks
+              # and their embedding vectors in memory at once. A 3072-dimension
+              # float32 vector is 12KB, and a batch of 32 with source text is
+              # comfortably under this — but a bug that unbounds the batch
+              # would OOM here rather than taking down the node.
+              memory: 2Gi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+
+          env:
+            - name: PURPLE_ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: environment
+            - name: PURPLE_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: region
+            - name: PURPLE_COSMOS_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: cosmos_endpoint
+            - name: PURPLE_OPENAI_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: openai_endpoint
+            - name: PURPLE_SEARCH_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: search_endpoint
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          # Liveness only. No readiness (no traffic), no startup probe (the
+          # worker has no meaningful boot sequence to wait for).
+          #
+          # A worker that is alive but making no progress is NOT caught by
+          # this probe — that is what the queue-depth and processing-rate
+          # alerts are for. A liveness probe cannot detect a semantically
+          # stuck consumer, and pretending otherwise is a false sense of
+          # safety.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import sys; sys.exit(0)"
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 10
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: purple-keyvault
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: purple-worker
+  namespace: purple
+spec:
+  # Only one, because the worker tolerates interruption by design. Requiring
+  # more would block node drains on a spot pool that is being reclaimed
+  # anyway.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: purple-worker
+  unhealthyPodEvictionPolicy: AlwaysAllow

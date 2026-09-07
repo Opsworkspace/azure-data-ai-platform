@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Every container must declare a CPU/memory request and a memory limit.
+#
+# A container with no requests is scheduled as BestEffort QoS: the scheduler
+# assumes it needs nothing, packs it onto a node that is already full, and it
+# is the first thing evicted when that node comes under memory pressure. The
+# eviction looks random and is very hard to attribute.
+#
+# Note what is required and what is NOT. A MEMORY limit is required, because
+# memory is incompressible and a leak without a limit takes down the whole
+# node. A CPU limit is deliberately NOT required — see the long explanation in
+# base/api-deployment.yaml about CFS throttling and tail latency.
+# ---------------------------------------------------------------------------
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredresources
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredResources
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            requiredRequests:
+              type: array
+              items:
+                type: string
+            requiredLimits:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredresources
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          required := input.parameters.requiredRequests[_]
+          not container.resources.requests[required]
+          msg := sprintf(
+            "Container <%v> has no %v request. It will be scheduled as BestEffort and evicted first under pressure.",
+            [container.name, required]
+          )
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          required := input.parameters.requiredLimits[_]
+          not container.resources.limits[required]
+          msg := sprintf(
+            "Container <%v> has no %v limit. An unbounded memory leak takes down the node, not just the pod.",
+            [container.name, required]
+          )
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredResources
+metadata:
+  name: require-requests-and-memory-limit
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - azure-arc
+  parameters:
+    requiredRequests:
+      - cpu
+      - memory
+    requiredLimits:
+      - memory

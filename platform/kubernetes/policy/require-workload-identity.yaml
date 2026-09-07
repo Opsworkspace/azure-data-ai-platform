@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# Pods that use a non-default service account must be labelled for workload
+# identity, and must not mount a legacy service account token.
+#
+# This one is platform-specific and catches a genuinely confusing failure:
+# without the `azure.workload.identity/use: "true"` label, the mutating
+# webhook does not inject the projected token, DefaultAzureCredential falls
+# silently through to the next method in its chain, and the application fails
+# at its first Azure call with an authentication error that says nothing about
+# a missing label.
+#
+# Catching it at admission turns a 45-minute debugging session into a rejected
+# apply with a one-line explanation.
+# ---------------------------------------------------------------------------
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequireworkloadidentity
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequireWorkloadIdentity
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequireworkloadidentity
+
+        violation[{"msg": msg}] {
+          sa := input.review.object.spec.serviceAccountName
+          sa != ""
+          sa != "default"
+          not input.review.object.metadata.labels["azure.workload.identity/use"]
+          msg := sprintf(
+            "Pod uses service account <%v> but is missing the label azure.workload.identity/use=true. The token will not be projected and every Azure call will fail authentication.",
+            [sa]
+          )
+        }
+
+        violation[{"msg": msg}] {
+          input.review.object.spec.automountServiceAccountToken == true
+          msg := "automountServiceAccountToken must be false. The legacy token does not expire; workload identity projects a short-lived one instead."
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireWorkloadIdentity
+metadata:
+  name: require-workload-identity-label
+spec:
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces:
+      - purple
+      - purple-system

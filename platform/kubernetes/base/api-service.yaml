@@ -1,0 +1,134 @@
+# ---------------------------------------------------------------------------
+# Service — a stable virtual IP in front of a changing set of pods.
+#
+# ClusterIP, not LoadBalancer. External traffic arrives through the ingress
+# controller, which is the single place TLS terminates and the single Azure
+# load balancer the platform pays for. A LoadBalancer Service per application
+# would provision one Azure load balancer each, with a public IP each — which
+# is both a cost and a hole in the "nothing is publicly reachable" property.
+# The ResourceQuota in namespace.yaml enforces this by capping
+# services.loadbalancers at zero.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: purple-api
+  namespace: purple
+  labels:
+    app.kubernetes.io/name: purple-api
+    app.kubernetes.io/part-of: purple
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: purple-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  # Route to the closest topology first (same node, then same zone). This cuts
+  # cross-zone data transfer charges — which are real and per-GB — and shaves
+  # latency, while still falling back across zones when local endpoints are
+  # unavailable.
+  trafficDistribution: PreferClose
+---
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget — the contract with the cluster's own automation.
+#
+# A PDB constrains VOLUNTARY disruptions: node drains during an AKS upgrade,
+# cluster autoscaler scale-down, node image updates. It does NOT protect
+# against involuntary ones — a node crashing, a zone failing — and expecting
+# it to is a common misunderstanding.
+#
+# Without a PDB, an AKS node image upgrade can cordon and drain nodes in
+# sequence fast enough to evict every replica at once. The upgrade is
+# "successful"; the service was down for 90 seconds.
+#
+# minAvailable: 2 rather than a percentage, because a percentage of 3 rounds
+# in ways that are easy to get wrong. This says plainly: at least two API pods
+# must be serving at all times, so a drain proceeds one pod at a time.
+# ---------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: purple-api
+  namespace: purple
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: purple-api
+  # If every pod is already unhealthy, allow eviction anyway rather than
+  # blocking a node drain forever. Without this, a fully-broken deployment can
+  # wedge a cluster upgrade indefinitely.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+---
+# ---------------------------------------------------------------------------
+# HorizontalPodAutoscaler.
+#
+# Scales on CPU utilisation as a proxy for load. A better signal for an API is
+# requests-per-second or queue depth via KEDA, and that is the natural next
+# step — but CPU is available with no extra components and is honest about
+# what it measures.
+#
+# The behaviour block is the part worth reading. Default HPA behaviour scales
+# DOWN aggressively, which causes flapping: scale up for a spike, scale down
+# immediately after, then up again for the next one. Every cycle is a cold
+# start.
+# ---------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: purple-api
+  namespace: purple
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: purple-api
+
+  # Never below 3: one per availability zone. Scaling to 2 would leave a zone
+  # unserved and break the topology spread constraint.
+  minReplicas: 3
+  maxReplicas: 50
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70% of the REQUEST (500m), so a target of 350m per pod. Deliberately
+          # not 90%: the headroom absorbs a traffic spike during the ~30 seconds
+          # it takes a new pod to become ready.
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  behavior:
+    scaleUp:
+      # React fast. A spike that is not absorbed is user-visible latency.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100 # allow doubling
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max # whichever adds more capacity
+
+    scaleDown:
+      # React slowly. Five minutes of sustained low utilisation before
+      # removing anything, and then at most 25% at a time. Scaling down costs
+      # nothing to delay and everything to get wrong.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+      selectPolicy: Min

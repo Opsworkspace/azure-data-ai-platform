@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Every container must declare readiness and liveness probes.
+#
+# The failure this prevents: a Deployment with no readiness probe is considered
+# Ready the instant its container starts. Kubernetes routes traffic to a pod
+# that has not finished booting, connected to its database, or loaded its
+# configuration — and every rolling deployment produces a burst of 500s that
+# nobody attributes to the missing probe.
+# ---------------------------------------------------------------------------
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredprobes
+  annotations:
+    description: >-
+      Requires that containers declare the probes named in the constraint.
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredProbes
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            probes:
+              type: array
+              items:
+                type: string
+            exemptImages:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredprobes
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.template.spec.containers[_]
+          not exempt(container.image)
+          probe := input.parameters.probes[_]
+          not container[probe]
+          msg := sprintf(
+            "Container <%v> is missing a %v. A container with no readiness probe receives traffic before it can serve it.",
+            [container.name, probe]
+          )
+        }
+
+        exempt(image) {
+          exempt_image := input.parameters.exemptImages[_]
+          startswith(image, exempt_image)
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredProbes
+metadata:
+  name: require-readiness-and-liveness
+spec:
+  # Start in dryrun. Promote to "deny" once the violation count is zero.
+  enforcementAction: dryrun
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "StatefulSet"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - azure-arc
+  parameters:
+    probes:
+      - readinessProbe
+      - livenessProbe
+    exemptImages: []

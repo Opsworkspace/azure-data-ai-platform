@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The base. It is deliberately NOT deployable as-is: every environment-specific
+# value is a placeholder that an overlay must replace. That is a feature —
+# a base that happens to work is a base someone will apply to production by
+# accident.
+#
+# Note there is no top-level `namespace:` field. Setting one would rewrite the
+# `purple-system` Namespace object itself to `purple`, colliding with the `purple`
+# Namespace. Every resource below declares its own namespace explicitly, which
+# is clearer anyway: you can read any single file and know where it lands.
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - secretproviderclass.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - worker-deployment.yaml
+  - networkpolicy.yaml
+
+# The ConfigMap is GENERATED rather than declared as a resource, for two
+# reasons:
+#
+#   1. Overlays can use `behavior: merge` to override individual keys. A
+#      merge against a plain resource is not supported — it has to be a
+#      generator in the base.
+#   2. The generator appends a hash of the content to the name, so changing a
+#      value produces a new ConfigMap name, which changes the pod spec, which
+#      triggers a rolling restart. Edit a plain ConfigMap and nothing restarts:
+#      the running pods keep the old values indefinitely, and the cluster
+#      quietly diverges from the manifest.
+configMapGenerator:
+  - name: purple-config
+    namespace: purple
+    literals:
+      - environment=dev
+      - region=eastus2
+      - cosmos_endpoint=https://PLACEHOLDER.documents.azure.com:443/
+      - openai_endpoint=https://PLACEHOLDER.openai.azure.com/
+      - search_endpoint=https://PLACEHOLDER.search.windows.net
+      - search_index_name=purple-documents
+      - cosmos_database=purple
+
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/part-of: purple
+      app.kubernetes.io/managed-by: kustomize

@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Namespaces.
+#
+# Two, not one. `purple` runs the product; `purple-system` runs platform tooling
+# that must keep working while the product is broken — diagnostics, and
+# anything an operator needs during an incident.
+#
+# Pod Security Admission is enforced at the namespace level. The `restricted`
+# profile is the strictest of the three built-in levels: no privilege
+# escalation, no host namespaces, no running as root, seccomp required, and
+# all capabilities dropped.
+#
+# Three modes exist and using all three is the point:
+#   enforce  rejects a non-compliant pod outright
+#   audit    records a violation in the audit log
+#   warn     returns a warning to whoever applied it
+#
+# `warn` is what makes this humane: a developer applying a non-compliant
+# manifest sees the reason immediately in their kubectl output rather than
+# finding a mysteriously absent pod.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: purple
+  labels:
+    name: purple
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    # Consumed by the NetworkPolicy selectors below.
+    tier: application
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: purple-system
+  labels:
+    name: purple-system
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+    tier: platform
+---
+# ---------------------------------------------------------------------------
+# ResourceQuota — a namespace-level ceiling.
+#
+# This is not primarily a cost control. It is a blast-radius control: it stops
+# one namespace's runaway deployment from consuming every node in the cluster
+# and starving everything else. Without a quota, a bad `replicas: 1000` is a
+# cluster-wide outage rather than one team's problem.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: purple-quota
+  namespace: purple
+spec:
+  hard:
+    requests.cpu: "100"
+    requests.memory: 200Gi
+    limits.cpu: "200"
+    limits.memory: 400Gi
+    pods: "200"
+    # Every LoadBalancer Service provisions a real Azure load balancer with a
+    # real monthly cost. Capping them at zero forces ingress through the
+    # shared ingress controller, which is the intended path.
+    services.loadbalancers: "0"
+    persistentvolumeclaims: "10"
+---
+# ---------------------------------------------------------------------------
+# LimitRange — defaults and bounds for anything that forgets to specify them.
+#
+# A container with no resource requests is scheduled as "BestEffort": the
+# scheduler assumes it needs nothing, packs it onto a full node, and it is the
+# first thing killed under memory pressure. A LimitRange means a forgotten
+# request becomes a sane default instead of a production incident.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: purple-limits
+  namespace: purple
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      max:
+        cpu: "8"
+        memory: 32Gi
+      min:
+        cpu: 10m
+        memory: 32Mi

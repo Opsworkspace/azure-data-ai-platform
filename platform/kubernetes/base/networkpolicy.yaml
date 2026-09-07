@@ -1,0 +1,168 @@
+# ---------------------------------------------------------------------------
+# Network policy — default deny, then explicit allows.
+#
+# By default, EVERY pod in a Kubernetes cluster can reach every other pod in
+# every namespace. That is the single widest lateral-movement surface in a
+# default cluster: one compromised pod can reach the database, the metrics
+# endpoint, and every other team's workload.
+#
+# The order matters. The default-deny policy below must exist BEFORE the
+# allow policies mean anything, because NetworkPolicies are purely additive —
+# with no deny-all in place, an "allow" policy grants nothing extra, since
+# everything was already allowed.
+#
+# Enforced by Cilium, configured in the AKS module as the network data plane.
+# A NetworkPolicy object in a cluster with no policy engine is silently inert:
+# it is accepted by the API server and enforces nothing at all.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: purple
+spec:
+  # Empty podSelector = every pod in the namespace.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS must be allowed explicitly, and it is the first thing people forget.
+# With default-deny in place and no DNS rule, every pod fails to resolve
+# anything — including the private endpoints — and the symptom is a connection
+# timeout that looks exactly like a firewall problem.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: purple
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# The API accepts traffic ONLY from the ingress controller. Not from other
+# pods in its own namespace, and not from the worker — neither has any reason
+# to call it, and allowing it would let a compromised worker reach the API's
+# authenticated endpoints from inside the trust boundary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: purple
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: purple-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Prometheus scraping. Metrics are not sensitive, but they are a real
+    # information-disclosure surface, so the source is still pinned.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Egress to Azure PaaS over private endpoints.
+#
+# The CIDR is the private endpoint subnet: 10.11.12.0/24 in the primary
+# region's prod spoke, computed by modules/network-spoke. It is a range, not a
+# set of hostnames, because NetworkPolicy operates on IPs — the DNS name
+# resolution happens before the policy is evaluated.
+#
+# This is one of the few places in the platform where an address is written by
+# hand rather than derived, so it is patched per environment by Kustomize.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-private-endpoints
+  namespace: purple
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - purple-api
+          - purple-worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.11.12.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Egress to Entra for token acquisition.
+#
+# Workload identity requires reaching login.microsoftonline.com, which is on
+# the public internet. There is no private endpoint for Entra ID.
+#
+# The ipBlock below is 0.0.0.0/0 with private ranges EXCLUDED. That looks
+# permissive and is worth being precise about: this rule does not weaken the
+# lateral-movement protection, because every RFC 1918 range is excluded — a
+# compromised pod still cannot reach anything inside the VNet that is not
+# explicitly allowed above.
+#
+# Outbound internet access is separately constrained by the hub firewall's
+# FQDN allow-list, which is the control that actually restricts WHERE this
+# traffic can go. Defence in depth: NetworkPolicy bounds lateral movement,
+# the firewall bounds egress destinations.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-entra
+  namespace: purple
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - purple-api
+          - purple-worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              # Link-local. 169.254.169.254 is the Azure Instance Metadata
+              # Service, which historically was how a pod could steal the
+              # NODE's managed identity — a privilege escalation from pod to
+              # node. Workload identity removes the need for IMDS entirely,
+              # and blocking it closes the escalation path.
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

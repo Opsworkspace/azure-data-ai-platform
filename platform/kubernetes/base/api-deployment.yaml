@@ -1,0 +1,313 @@
+# ---------------------------------------------------------------------------
+# The API Deployment.
+#
+# This single manifest carries most of the platform's availability behaviour.
+# Read it alongside services/api/purple_api/health.py and
+# infra/terraform/modules/front-door/main.tf — the three describe one
+# mechanism from three angles.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: purple-api
+  namespace: purple
+  labels:
+    app.kubernetes.io/name: purple-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: purple
+spec:
+  # Replica count is managed by the HorizontalPodAutoscaler after the first
+  # rollout. It is set here only as the initial value; leaving it out entirely
+  # would default to 1 and cause a brief single-replica window on first deploy.
+  replicas: 3
+
+  revisionHistoryLimit: 5
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: purple-api
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 means capacity NEVER drops below the desired count
+      # during a rollout. New pods must become Ready before old ones are
+      # removed. The trade-off is that a rollout needs headroom for one extra
+      # pod, which is exactly what maxSurge provides.
+      #
+      # The common alternative — maxUnavailable: 25% — makes rollouts faster
+      # and reduces capacity mid-deploy, which is how a routine deployment
+      # during a traffic peak becomes an incident.
+      maxUnavailable: 0
+      maxSurge: 1
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: purple-api
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: purple
+        # REQUIRED for workload identity. Without this label the mutating
+        # webhook does not inject the projected token volume or the
+        # AZURE_* environment variables, and DefaultAzureCredential silently
+        # falls through to the next method in its chain and fails.
+        azure.workload.identity/use: "true"
+      annotations:
+        # Managed Prometheus scrape configuration.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: purple-api
+      automountServiceAccountToken: false
+
+      # ---------------------------------------------------------------------
+      # Graceful shutdown budget.
+      #
+      # Must exceed preStop sleep + the application's own drain time.
+      # 5s preStop + 25s uvicorn graceful shutdown = 30s, so 45s leaves margin.
+      # If this expires, Kubernetes sends SIGKILL and in-flight requests die.
+      # ---------------------------------------------------------------------
+      terminationGracePeriodSeconds: 45
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ---------------------------------------------------------------------
+      # Spread pods across availability zones.
+      #
+      # This is what makes zone redundancy real. Without it the scheduler is
+      # free to place all three replicas on nodes in one zone, and a zone
+      # failure takes the whole service down despite a three-zone node pool.
+      #
+      # whenUnsatisfiable: DoNotSchedule is deliberate and strict — a pod that
+      # cannot be placed without breaking the spread stays Pending. With
+      # ScheduleAnyway the constraint becomes a preference the scheduler
+      # quietly ignores under pressure, which means it silently stops
+      # protecting you exactly when load is highest.
+      # ---------------------------------------------------------------------
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: purple-api
+        # A softer constraint across nodes within a zone. ScheduleAnyway here
+        # because node-level spread is a nice-to-have once zone spread is
+        # guaranteed.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: purple-api
+
+      nodeSelector:
+        workload-type: general
+
+      containers:
+        - name: api
+          # Replaced by Kustomize per environment. Digest-pinned in prod so a
+          # rollout deploys a known artefact rather than whatever the tag
+          # currently points at.
+          image: PLACEHOLDER.azurecr.io/purple-api:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          # -----------------------------------------------------------------
+          # Resources.
+          #
+          # REQUESTS are what the scheduler reserves. LIMITS are the hard cap.
+          #
+          # Memory: request == limit. Memory is incompressible — a process
+          # over its limit is OOMKilled, not throttled — so setting them equal
+          # gives the pod a Guaranteed QoS class and makes it the LAST thing
+          # evicted under node memory pressure.
+          #
+          # CPU: request set, NO limit. This is deliberate and is the setting
+          # people most often disagree with, so the reasoning matters:
+          #
+          # A CPU limit is enforced by CFS quota over a 100ms period. A process
+          # that exhausts its quota is throttled for the remainder of that
+          # period — even if the node is completely idle. For a latency-
+          # sensitive service this produces exactly the tail-latency spikes
+          # that the p99 SLO is measured on, and the throttling is invisible
+          # unless you are watching container_cpu_cfs_throttled_seconds_total.
+          #
+          # The CPU REQUEST already guarantees a share under contention, which
+          # is the protection that actually matters. The limit only adds
+          # artificial throttling when spare capacity exists.
+          #
+          # This does mean a runaway process can consume idle node CPU. That
+          # is a real trade, and it is the right one for a latency-sensitive
+          # API: the ResourceQuota above bounds the namespace as a whole.
+          # -----------------------------------------------------------------
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+
+          env:
+            - name: PURPLE_ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: environment
+            - name: PURPLE_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: region
+            - name: PURPLE_COSMOS_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: cosmos_endpoint
+            - name: PURPLE_OPENAI_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: openai_endpoint
+            - name: PURPLE_SEARCH_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: purple-config
+                  key: search_endpoint
+            # The pod's own identity, surfaced for structured logs. Downward
+            # API rather than a hard-coded value, so it is always correct.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # App Insights connection string, mounted from Key Vault by the
+            # CSI driver and exposed as a file, then read into this variable.
+            # NOT a Kubernetes Secret: a Secret is base64 in etcd, readable by
+            # anyone with get on secrets in the namespace.
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: purple-appinsights
+                  key: connection-string
+                  optional: true
+
+          # -----------------------------------------------------------------
+          # Probes. Three of them, doing three different jobs.
+          # See services/api/purple_api/health.py for why they must differ.
+          # -----------------------------------------------------------------
+
+          # STARTUP: gives the app up to 60s (12 x 5s) to boot. Until this
+          # succeeds, the liveness and readiness probes are not run at all.
+          # This is what lets liveness have an aggressive timeout without
+          # killing a slow-starting pod.
+          startupProbe:
+            httpGet:
+              path: /healthz/startup
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+            timeoutSeconds: 3
+
+          # LIVENESS: is the process wedged? Checks NO dependencies. A failure
+          # here KILLS the container, so a dependency check here would turn a
+          # Cosmos outage into a cluster-wide restart storm.
+          #
+          # failureThreshold 3 with a 10s period means a genuinely stuck
+          # process is restarted within ~30 seconds, and a single slow
+          # response does not cause a restart.
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # READINESS: can it serve right now? Checks dependencies. A failure
+          # removes the pod from the Service endpoints but does NOT restart
+          # it, so recovery is instant when the dependency returns.
+          #
+          # This is also the probe Front Door effectively depends on: when
+          # every pod in a region is unready, the region leaves global
+          # rotation.
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+            # Must exceed the app's readiness_timeout_seconds (3.0), or the
+            # probe times out before the app can report WHICH dependency
+            # failed — losing the diagnostic entirely.
+            timeoutSeconds: 5
+
+          lifecycle:
+            preStop:
+              exec:
+                # ---------------------------------------------------------
+                # The most under-appreciated five seconds in Kubernetes.
+                #
+                # On termination, two things happen CONCURRENTLY:
+                #   1. SIGTERM is sent to the container.
+                #   2. The pod is removed from Service endpoints.
+                #
+                # (2) has to propagate to every kube-proxy and every ingress
+                # controller, which takes a second or two. If the process
+                # exits on SIGTERM immediately, requests routed during that
+                # window arrive at a closed socket and users see 502s during
+                # every single deployment.
+                #
+                # This sleep holds the container open while endpoint removal
+                # propagates. The app is still serving throughout; it just
+                # has not started shutting down yet.
+                # ---------------------------------------------------------
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+          volumeMounts:
+            # readOnlyRootFilesystem: true means the app cannot write
+            # anywhere unless given an explicit volume. These two are the
+            # only writable paths, and both are memory-backed and ephemeral.
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        # Secrets Store CSI driver. Fetches from Key Vault at pod start using
+        # the CSI driver's own managed identity, and projects them as files.
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: purple-keyvault

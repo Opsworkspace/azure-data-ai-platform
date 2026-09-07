@@ -1,0 +1,100 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ---------------------------------------------------------------------------
+# Development overlay.
+#
+# Smaller, cheaper, and tagged rather than digest-pinned — because in dev the
+# whole point is that `:latest` moves. Note that this is the ONE property
+# deliberately weakened relative to production; the security posture is
+# unchanged.
+# ---------------------------------------------------------------------------
+
+resources:
+  - ../../base
+
+images:
+  - name: PLACEHOLDER.azurecr.io/purple-api
+    newName: purpleplatdeveus2acr000000.azurecr.io/purple-api
+    newTag: latest
+  - name: PLACEHOLDER.azurecr.io/purple-worker
+    newName: purpleplatdeveus2acr000000.azurecr.io/purple-worker
+    newTag: latest
+
+replicas:
+  - name: purple-api
+    count: 2
+  - name: purple-worker
+    count: 1
+
+configMapGenerator:
+  - name: purple-config
+    namespace: purple
+    behavior: merge
+    literals:
+      - environment=dev
+      - region=eastus2
+      - cosmos_endpoint=https://purple-data-dev-eus2-cosmos-000000.documents.azure.com:443/
+      - openai_endpoint=https://purple-data-dev-eus2-oai.openai.azure.com/
+      - search_endpoint=https://purple-data-dev-eus2-srch.search.windows.net
+
+patches:
+  - target:
+      kind: SecretProviderClass
+      name: purple-keyvault
+    patch: |-
+      - op: replace
+        path: /spec/parameters/keyvaultName
+        value: "purple-plat-dev-eus2-kv"
+
+  # Dev spoke is 10.41.0.0/16 -> private endpoints at 10.41.12.0/24.
+  - target:
+      kind: NetworkPolicy
+      name: allow-egress-to-private-endpoints
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to/0/ipBlock/cidr
+        value: "10.41.12.0/24"
+
+  # --- single-zone relaxation ---------------------------------------------
+  # Dev runs one availability zone, so a DoNotSchedule zone-spread constraint
+  # would leave every pod beyond the first stuck Pending forever. Relaxing it
+  # to ScheduleAnyway is required, and is exactly the kind of difference that
+  # must be written down rather than discovered.
+  - target:
+      kind: Deployment
+      name: purple-api
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable
+        value: ScheduleAnyway
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 256Mi
+
+  # With only two replicas, minAvailable 2 would block every node drain
+  # permanently — the cluster could never be upgraded.
+  - target:
+      kind: PodDisruptionBudget
+      name: purple-api
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 1
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: purple-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6
