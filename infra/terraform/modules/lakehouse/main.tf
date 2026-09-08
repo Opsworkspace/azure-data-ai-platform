@@ -55,6 +55,11 @@ resource "azurerm_storage_account" "lakehouse" {
   # stops working. That is the intended outcome.
   shared_access_key_enabled = false
 
+  # SFTP local users are a separate username/password credential store that
+  # bypasses Entra entirely. Disabling shared keys while leaving this on
+  # would close the front door and leave a side one.
+  local_user_enabled = false
+
   # No anonymous container access, ever.
   allow_nested_items_to_be_public = false
 

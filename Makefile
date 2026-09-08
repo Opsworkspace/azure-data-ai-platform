@@ -148,7 +148,9 @@ placeholders: ## Fail if a non-placeholder GUID or personal email is tracked
 .PHONY: checkov
 checkov: ## Checkov policy scan of the Terraform
 	$(call need,checkov,pip install checkov)
-	@checkov --directory infra/terraform --quiet --compact --framework terraform
+	@# Directory, framework and every documented skip live in .checkov.yaml,
+	@# so this and the CI job cannot drift apart.
+	@checkov --config-file .checkov.yaml --quiet --compact
 
 .PHONY: tfsec
 tfsec: ## trivy config scan of the Terraform

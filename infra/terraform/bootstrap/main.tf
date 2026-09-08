@@ -73,6 +73,7 @@ resource "azurerm_storage_account" "state" {
   # A shared key that grants read access to it is a credential that grants
   # read access to every secret the platform has ever generated.
   shared_access_key_enabled       = false
+  local_user_enabled              = false
   default_to_oauth_authentication = true
 
   # Public access is left enabled here and ONLY here. A private endpoint on
@@ -81,6 +82,24 @@ resource "azurerm_storage_account" "state" {
   # this backend. In a funded environment the resolution is a self-hosted CI
   # runner inside the VNet, after which this becomes false.
   public_network_access_enabled = true
+
+  # Public access being ON does not mean open to the internet. The default
+  # action for an account with no network rules is Allow, which is what makes
+  # "public access enabled" actually mean "reachable from anywhere" — and a
+  # state file is the single highest-value blob in the platform: it contains
+  # every resource attribute in plaintext, including values marked sensitive.
+  #
+  # Deny by default, with an explicit allowlist. `state_allowed_ip_ranges`
+  # defaults to empty, so an operator who has not set it is locked out rather
+  # than silently exposed. That is the correct direction to fail.
+  #
+  # bypass = AzureServices keeps the portal's blob browser and Azure-internal
+  # callers working; it does not open the account to the internet.
+  network_rules {
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+    ip_rules       = var.state_allowed_ip_ranges
+  }
 
   blob_properties {
     # The recovery path for a corrupted state write. Terraform writes state as

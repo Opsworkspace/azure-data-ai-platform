@@ -3,6 +3,11 @@
 pytest~=8.3.0
 pytest-asyncio~=0.24.0
 httpx~=0.28.0
-ruff~=0.8.0
+# Pinned EXACTLY, unlike the runtime dependencies. A formatter is not a
+# library: any version change can alter its output, which turns CI red
+# without a single line of code changing. `~=0.8.0` did exactly that —
+# ruff moved the `assert cond, "msg"` layout, and CI began demanding a
+# style the committed source did not use.
+ruff==0.16.6
 mypy~=1.13.0
 types-requests~=2.32.0

@@ -1,0 +1,115 @@
+# Checkov configuration.
+#
+# Every entry below is a decision, not a silencing. The rule for adding one is
+# the same rule the rest of this repository follows: if a check is skipped, the
+# reason is written down where the skip lives, and the reason has to survive
+# being read out loud in a review.
+#
+# Three categories appear here, and they are not equivalent:
+#
+#   FALSE POSITIVE  the control IS implemented; checkov cannot see it, usually
+#                   because the value is behind a variable or a conditional.
+#   DELIBERATE      the control is understood and not implemented, for a
+#                   reason recorded next to the resource.
+#   OUT OF SCOPE    implementing it would require infrastructure this
+#                   repository does not create (an HSM, Defender licensing).
+#
+# A check that is genuinely wrong gets FIXED, not listed. Three were, in the
+# same change that created this file: Cosmos key-metadata writes, and SFTP
+# local users on both storage accounts.
+
+framework:
+  - terraform
+
+directory:
+  - infra/terraform
+
+skip-check:
+  # --- FALSE POSITIVE -------------------------------------------------------
+
+  # Every ACR check below tests an argument the module sets as
+  # `var.sku == "Premium" ? ... : ...`. checkov evaluates the configuration
+  # statically and cannot resolve the variable, so it reads the conditional as
+  # absent. modules/container-registry/main.tf sets data endpoints, zone
+  # redundancy, retention and geo-replication on Premium, which is the SKU
+  # prod uses. Dev deliberately runs Basic, where these features do not exist.
+  - CKV_AZURE_233  # ACR zone redundant
+  - CKV_AZURE_237  # ACR dedicated data endpoints
+  - CKV_AZURE_165  # ACR geo-replication
+
+  # Local authentication IS disabled — as `local_authentication_enabled =
+  # false`, which is the current provider argument. CKV_AZURE_140 looks for
+  # the superseded `local_authentication_disabled`, so it reports a control
+  # that is present. See modules/cosmosdb/main.tf.
+  - CKV_AZURE_140
+
+  # Flags every subnet without a directly attached NSG. AzureFirewallSubnet
+  # and AzureBastionSubnet cannot carry one — Azure rejects the association —
+  # and the Databricks subnets carry NSGs created by the databricks module
+  # rather than inline. The workload subnets that can carry one, do.
+  - CKV2_AZURE_31
+
+  # --- DELIBERATE -----------------------------------------------------------
+
+  # Both apply only to the bootstrap state account, which is the one resource
+  # in the repository with public network access enabled. The reasoning is
+  # written at length in bootstrap/main.tf: a private endpoint for the state
+  # backend needs a VNet that is itself created by Terraform using that
+  # backend. It is now default-deny with an explicit IP allowlist, which is
+  # the mitigation available without resolving the ordering problem.
+  - CKV_AZURE_59   # storage disallows public access
+  - CKV2_AZURE_33  # storage account private endpoint
+
+  # Read-request logging on blob and queue, charged per operation. The state
+  # account has no queue service at all, and its blob reads are Terraform
+  # reading state — already recorded, with far more context, in the Activity
+  # Log and in Terraform's own run history. The lakehouse's meaningful audit
+  # trail is Unity Catalog lineage, not storage-level read logs.
+  - CKV_AZURE_33   # queue service logging
+  - CKV2_AZURE_21  # blob service read logging
+
+  # Azure Firewall Premium features: IDPS and threat-intel deny mode. Premium
+  # roughly triples the firewall's hourly cost, and the platform's egress
+  # control is the FQDN allow-list in modules/network-hub — a default-deny
+  # list is a stronger control than IDPS applied to traffic that is already
+  # denied by default. Documented as a cost/benefit decision, revisited if the
+  # platform ever carries regulated data.
+  - CKV_AZURE_216  # DenyIntelMode
+  - CKV_AZURE_220  # IDPS mode deny
+
+  # max_pods >= 50 per node. The cluster runs Azure CNI Overlay, where pod IPs
+  # come from an overlay CIDR rather than the subnet, so the node's pod
+  # density is a scheduling decision rather than an IP-exhaustion one. The
+  # spot and AI pools deliberately run fewer, larger pods.
+  - CKV_AZURE_168
+
+  # --- OUT OF SCOPE ---------------------------------------------------------
+
+  # Customer-managed keys for storage, Cosmos, Cognitive Services and AKS OS
+  # disks. All four are encrypted at rest today with Microsoft-managed keys.
+  # CMK is not a stronger cipher; it moves key custody to a Key Vault this
+  # repository would then have to create, protect with purge protection, grant
+  # per-service managed identities on, and rotate — plus the operational
+  # reality that losing the key destroys the data. That is a genuine piece of
+  # work with its own failure modes, and pretending otherwise by adding four
+  # arguments would be worse than recording it as not done.
+  - CKV2_AZURE_1   # storage CMK
+  - CKV_AZURE_100  # Cosmos CMK
+  - CKV2_AZURE_22  # Cognitive Services CMK
+  - CKV_AZURE_117  # AKS disk encryption set
+
+  # Container image scanning, signing, and quarantine. All three are Microsoft
+  # Defender for Containers features, licensed per node per month and enabled
+  # at the subscription rather than in Terraform. The repository cannot turn
+  # on a subscription-level paid product it does not own.
+  - CKV_AZURE_163  # vulnerability scanning
+  - CKV_AZURE_164  # signed/trusted images
+  - CKV_AZURE_166  # quarantine and verify
+
+  # Data loss prevention for Azure OpenAI restricts the account to an
+  # allow-list of outbound URLs. It is meaningful for accounts with
+  # "on your data" enabled, which reach out to external sources. This
+  # deployment retrieves context in the application (services/api rag.py) and
+  # passes it in the prompt, so the account makes no outbound calls to
+  # restrict.
+  - CKV_AZURE_247

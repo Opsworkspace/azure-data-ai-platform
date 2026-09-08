@@ -22,7 +22,7 @@ def _chunk(text: str, **kwargs: int) -> list:
         document_name="report.pdf",
         user_id="user-1",
         text=text,
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
 
 

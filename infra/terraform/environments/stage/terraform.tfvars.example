@@ -14,5 +14,4 @@ platform_admin_group_object_ids = [
 ]
 
 alert_email_receivers = ["platform-oncall@example.com"]
-custom_domain         = "api.purple.example.com"
 cost_center           = "CC-0000-PLATFORM"

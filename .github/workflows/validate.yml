@@ -83,9 +83,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install kustomize
+        run: |
+          curl -sS "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
+            | bash -s 5.5.0
+          sudo mv kustomize /usr/local/bin/
+      - name: Render the production overlay
+        # Lint the RENDERED output, never the base. The base carries
+        # PLACEHOLDER image names and unpatched replica counts that an overlay
+        # replaces, so linting it reports problems that exist in nothing that
+        # would ever be applied — which is precisely why this job used to fail
+        # while `make lint-k8s` passed. This now matches the Makefile.
+        run: |
+          mkdir -p rendered
+          kustomize build platform/kubernetes/overlays/prod > rendered/prod.yaml
       - uses: stackrox/kube-linter-action@v1
         with:
-          directory: platform/kubernetes
+          directory: rendered
           config: .kube-linter.yaml
 
   databricks:
