@@ -173,7 +173,9 @@ async def close_clients() -> None:
             if hasattr(client, "close"):
                 await client.close()
         except Exception:  # noqa: BLE001
-            log.warning("client_close_failed", client=factory.__name__)
+            # lru_cache preserves __name__ through functools.wraps at runtime;
+            # typeshed's _lru_cache_wrapper simply does not declare it.
+            log.warning("client_close_failed", client=factory.__name__)  # type: ignore[union-attr]
 
     # The credential holds its own HTTP transport. Failing to close it on
     # shutdown is not worth crashing over, and there is nothing useful to do

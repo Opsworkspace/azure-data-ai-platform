@@ -88,6 +88,18 @@ patches:
         path: /spec/minAvailable
         value: 1
 
+  # The worker runs a single replica in dev, so the base minAvailable of 1
+  # leaves zero allowed disruptions: `kubectl drain` blocks forever and the
+  # node pool can never be upgraded. Exactly the trap the api PDB above
+  # avoids, missed because the worker's replica count differs.
+  - target:
+      kind: PodDisruptionBudget
+      name: purple-worker
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+
   - target:
       kind: HorizontalPodAutoscaler
       name: purple-api

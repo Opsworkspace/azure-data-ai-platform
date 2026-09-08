@@ -46,6 +46,16 @@ checks:
     - required-label-owner
 
   exclude:
+    # no-anti-affinity looks for spec.affinity.podAntiAffinity and nothing
+    # else. Both deployments spread replicas with topologySpreadConstraints
+    # instead — across zones with DoNotSchedule, then across nodes within a
+    # zone with ScheduleAnyway — which is the mechanism that superseded
+    # podAntiAffinity and expresses "spread evenly" rather than only "not on
+    # the same node". The check cannot see it, so it reports a gap that does
+    # not exist. Excluding it beats adding a redundant podAntiAffinity block
+    # purely to satisfy a linter.
+    - no-anti-affinity
+
     # The worker serves no traffic, so a readiness probe on it would be
     # meaningless ceremony. The check cannot express "unless it is a queue
     # consumer", so it is excluded and the reasoning lives in

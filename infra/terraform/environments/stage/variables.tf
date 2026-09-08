@@ -22,12 +22,6 @@ variable "alert_email_receivers" {
   default     = ["platform-oncall@example.com"]
 }
 
-variable "custom_domain" {
-  description = "Public API hostname. RFC 2606 documentation domain in this repository."
-  type        = string
-  default     = "api.purple.example.com"
-}
-
 variable "cost_center" {
   description = "Finance cost centre for chargeback."
   type        = string

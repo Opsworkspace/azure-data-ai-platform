@@ -87,7 +87,13 @@ resource "azurerm_cosmosdb_account" "this" {
   tags                = var.tags
 
   offer_type = "Standard"
-  kind       = "GlobalDocumentDB" # the SQL / NoSQL API
+
+  # Blocks writes to key metadata through the management plane. Local auth is
+  # already off below, but this closes the adjacent path: someone holding
+  # Contributor on the resource — and no data-plane role — could otherwise
+  # regenerate a key through ARM.
+  access_key_metadata_writes_enabled = false
+  kind                               = "GlobalDocumentDB" # the SQL / NoSQL API
 
   automatic_failover_enabled       = true
   multiple_write_locations_enabled = var.enable_multi_region_writes

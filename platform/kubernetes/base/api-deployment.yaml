@@ -15,6 +15,16 @@ metadata:
     app.kubernetes.io/name: purple-api
     app.kubernetes.io/component: api
     app.kubernetes.io/part-of: purple
+    # `owner` is required by kube-linter's required-label check and mirrors the
+    # `owner` tag every Terraform resource carries, so a resource found in the
+    # portal and a pod found in the cluster resolve to the same team.
+    owner: platform-team
+    # Also present on the pod template below, which is the copy that matters:
+    # the mutating webhook reads POD labels. This one exists so the guard can
+    # see it — kube-linter's required-label template inspects an object's own
+    # metadata, not its pod template — and so `kubectl get deploy -l` finds
+    # every workload-identity consumer.
+    azure.workload.identity/use: "true"
 spec:
   # Replica count is managed by the HorizontalPodAutoscaler after the first
   # rollout. It is set here only as the initial value; leaving it out entirely

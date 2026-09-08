@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import MutableMapping
 from typing import Any
 
 import structlog
@@ -69,7 +70,9 @@ def configure_logging(settings: Settings) -> None:
     )
 
 
-def _add_trace_context(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+def _add_trace_context(
+    _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
     """Attach the current trace and span ids to every log line.
 
     This is the single highest-value logging enhancement available. Without

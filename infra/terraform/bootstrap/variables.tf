@@ -32,3 +32,9 @@ variable "owner" {
   type        = string
   default     = "platform-team@example.com"
 }
+
+variable "state_allowed_ip_ranges" {
+  description = "Public IPs or CIDRs permitted to reach the state storage account — the CI runner's egress address, or an operator workstation. Empty by default: the account denies everything until this is set deliberately, because the alternative default is a world-readable state file."
+  type        = list(string)
+  default     = []
+}

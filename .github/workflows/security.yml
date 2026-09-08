@@ -26,9 +26,22 @@ jobs:
         with:
           # Full history: a secret removed in a later commit is still a leak.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks
         env:
-          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+      - name: Scan the full history for secrets
+        # The binary rather than gitleaks/gitleaks-action@v2, which requires a
+        # paid licence for repositories owned by an ORGANISATION and fails with
+        # "missing gitleaks license" on this one. gitleaks itself is MIT and
+        # has no such restriction, so this runs exactly the scan `make secrets`
+        # runs — and removes a hosted action from the supply chain of a
+        # security check, which is worth something on its own.
+        run: gitleaks detect --config .gitleaks.toml --redact --verbose
 
   placeholders:
     name: placeholder-leak guard
@@ -44,8 +57,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: bridgecrewio/checkov-action@master
         with:
-          directory: infra/terraform
-          framework: terraform
+          # Directory and framework now come from .checkov.yaml, so the scan
+          # CI runs and the scan `make checkov` runs cannot drift apart. Every
+          # skip in that file carries the reason it exists.
+          config_file: .checkov.yaml
           output_format: cli,sarif
           output_file_path: console,checkov.sarif
           soft_fail: false

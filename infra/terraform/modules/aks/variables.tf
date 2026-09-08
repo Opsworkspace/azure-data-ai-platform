@@ -134,6 +134,10 @@ variable "container_registry_id" {
   default     = ""
 }
 
+# tflint-ignore: terraform_unused_declarations
+# Deliberately declared and not consumed: see the description. Kept so that
+# enabling a public API server later is a change to this module rather than
+# a change to every caller's variable list.
 variable "authorized_ip_ranges" {
   description = "CIDRs allowed to reach the PUBLIC API server. Empty and unused here, because the cluster is private — the API server has no public endpoint to restrict."
   type        = list(string)
