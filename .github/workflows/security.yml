@@ -84,6 +84,13 @@ jobs:
           exit-code: "1"
           format: sarif
           output: trivy-config.sarif
+          # Without this, `severity` filters the human-readable output but NOT
+          # the SARIF, and trivy-action computes its exit code from the SARIF.
+          # The job therefore failed on 19 low and medium findings while being
+          # configured to fail only on HIGH and CRITICAL — of which there were
+          # none. The medium and low findings still reach code scanning through
+          # the upload step below; they simply no longer break the build.
+          limit-severities-for-sarif: true
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
