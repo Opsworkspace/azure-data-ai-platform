@@ -74,6 +74,26 @@ validate: fmt-check ## terraform init -backend=false + validate, every directory
 	  terraform -chdir=$$d validate -no-color; \
 	done
 
+.PHONY: validate-bundle
+validate-bundle: ## databricks bundle validate (needs a workspace; NOT part of `all`)
+	$(call need,databricks,https://docs.databricks.com/dev-tools/cli/install.html)
+	@# Deliberately excluded from `all` and from CI.
+	@#
+	@# `bundle validate` authenticates to a workspace before it will resolve
+	@# variables, so it cannot run in a pipeline that holds no credentials —
+	@# and no pipeline here does. Running it anyway would mean either giving
+	@# CI a workspace token or watching a permanently red job.
+	@#
+	@# What CI can check without credentials is that the YAML parses and that
+	@# every key exists in the CLI's schema. That is `lint-bundle`.
+	@cd data/databricks && databricks bundle validate --target $(or $(TARGET),dev)
+
+.PHONY: lint-bundle
+lint-bundle: ## Parse the bundle YAML and check it against the Databricks schema
+	$(call need,databricks,https://docs.databricks.com/dev-tools/cli/install.html)
+	@databricks bundle schema > /tmp/dab-schema.json
+	@python3 tools/check_bundle_schema.py
+
 # -------------------------------------------------------------------- lint ---
 
 .PHONY: lint

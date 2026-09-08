@@ -1,0 +1,130 @@
+# Databricks Asset Bundle — the data platform.
+#
+# A bundle is the Databricks equivalent of a Terraform root module: it declares
+# jobs, pipelines and their clusters as versioned source, and `databricks bundle
+# deploy --target <env>` reconciles the workspace to match. It replaces the raw
+# job JSON that used to live in `jobs/`.
+#
+# Why the change. Raw JSON posted with `databricks jobs create` has three
+# problems the bundle format solves outright:
+#
+#   1. It is not idempotent. `jobs create` makes a NEW job every time it runs,
+#      so a re-run leaves two identical schedules racing each other. Reaching
+#      idempotency by hand means tracking the job id somewhere outside the repo.
+#   2. Notebook paths are absolute (`/Repos/platform/...`). That path is a
+#      property of one workspace's folder layout, so the same JSON silently
+#      targets the wrong notebook — or nothing at all — in another workspace.
+#      A bundle uploads the notebooks it references and rewrites the paths.
+#   3. There is no environment axis. Dev, stage and prod need different cluster
+#      sizes, catalogs and schedules, which JSON can only express by copying the
+#      file and editing it, after which the copies drift.
+#
+# The environments below differ only in ARGUMENTS, exactly as the Terraform
+# environments do. That is deliberate: the same reasoning applies, and it means
+# a reviewer can diff two targets instead of reading two files.
+
+bundle:
+  name: purple-data-platform
+
+# Resource definitions are split out so this file stays readable as more jobs
+# and pipelines are added.
+include:
+  - resources/*.yml
+
+# ---------------------------------------------------------------------------
+# Variables
+#
+# Every value that legitimately differs between environments is declared here
+# and overridden per target below. Anything NOT in this list is intentionally
+# identical everywhere — security posture in particular, which must never be a
+# per-environment argument.
+# ---------------------------------------------------------------------------
+variables:
+  catalog:
+    description: Unity Catalog catalog for this environment.
+    default: purple_dev
+
+  etl_node_type:
+    description: VM size for the ETL cluster's driver and workers.
+    default: Standard_D4ds_v5
+
+  etl_workers:
+    description: Worker count for the ETL cluster.
+    default: 2
+
+  embedding_node_type:
+    description: VM size for the embedding cluster.
+    default: Standard_D4ds_v5
+
+  embedding_workers:
+    description: Worker count for the embedding cluster.
+    default: 1
+
+  etl_availability:
+    description: >-
+      Azure capacity type for ETL workers. Spot in every environment: the
+      driver is pinned on demand separately, so eviction costs a retried task,
+      not a failed run.
+    default: SPOT_WITH_FALLBACK_AZURE
+
+  schedule_pause_status:
+    description: >-
+      Whether the nightly schedule is live. Paused everywhere except prod, so
+      that deploying to a lower environment cannot start firing runs nobody
+      is watching.
+    default: PAUSED
+
+  oncall_email:
+    description: Where failure notifications go.
+    default: platform-oncall@example.com
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+targets:
+  # `mode: development` is not cosmetic. It prefixes every deployed resource
+  # with `[dev <your-username>]`, pauses all schedules and triggers, and
+  # deploys under your own workspace home directory. The effect is that two
+  # engineers can deploy this bundle at the same time without colliding, and
+  # neither can accidentally start a scheduled production run.
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-0000000000000000.0.azuredatabricks.net
+    variables:
+      catalog: purple_dev
+
+  # Stage runs at production fidelity — same Photon, same spot policy, same
+  # cluster shape — because the point of stage is to catch what dev cannot.
+  # Only the schedule and the catalog differ.
+  stage:
+    mode: production
+    workspace:
+      host: https://adb-0000000000000000.1.azuredatabricks.net
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: 00000000-0000-0000-0000-000000000000
+    variables:
+      catalog: purple_stage
+      etl_node_type: Standard_D8ds_v5
+      etl_workers: 4
+      embedding_workers: 2
+
+  prod:
+    mode: production
+    workspace:
+      host: https://adb-0000000000000000.2.azuredatabricks.net
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}
+    # `run_as` a service principal, never a person. A job that runs as an
+    # employee breaks when that employee leaves or loses a grant, and its
+    # Unity Catalog lineage attributes production writes to an individual.
+    run_as:
+      service_principal_name: 00000000-0000-0000-0000-000000000000
+    variables:
+      catalog: purple_prod
+      etl_node_type: Standard_D8ds_v5
+      etl_workers: 4
+      embedding_node_type: Standard_D4ds_v5
+      embedding_workers: 2
+      schedule_pause_status: UNPAUSED
