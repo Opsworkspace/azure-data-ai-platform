@@ -11,6 +11,11 @@ useDefault = true
 id = "azure-subscription-or-tenant-guid"
 description = "A GUID that looks like a real Azure subscription or tenant id"
 regex = '''(?i)(subscription_id|tenant_id|client_id|object_id|principal_id)\s*[:=]\s*"?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"?'''
+# The GUID is group 2; group 1 is the key name. Without this, gitleaks treats
+# group 1 as the secret and reports the literal string "subscription_id" — so
+# the allowlist below, which matches against the secret, never sees a GUID to
+# allow and every placeholder is reported as a leak.
+secretGroup = 2
 tags = ["azure", "identifier"]
 
 [[rules]]
