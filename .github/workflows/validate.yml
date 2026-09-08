@@ -87,3 +87,23 @@ jobs:
         with:
           directory: platform/kubernetes
           config: .kube-linter.yaml
+
+  databricks:
+    name: bundle schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: databricks/setup-cli@main
+      - name: Check the bundle against the CLI schema
+        # `databricks bundle validate` authenticates before it resolves
+        # anything, so it cannot run here: this workflow is granted no Azure
+        # or Databricks identity, which is what mechanically prevents it from
+        # deploying. What is checkable offline is that the YAML parses and
+        # that every key exists in the schema of the installed CLI.
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+          python tools/check_bundle_schema.py

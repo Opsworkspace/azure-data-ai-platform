@@ -81,9 +81,10 @@ Three properties make it worth the setup cost:
 
 | Path | Contents |
 |---|---|
+| `databricks.yml` | Asset Bundle root — variables and the dev/stage/prod targets |
+| `resources/` | Job definitions — schedules, clusters, task dependencies |
 | `unity-catalog/` | Catalog, schema, external location and grant definitions |
 | `notebooks/` | The medallion pipeline, one notebook per hop |
-| `jobs/` | Databricks job definitions — schedules, clusters, dependencies |
 
 Notebooks are stored as `.py` in Databricks source format, not `.ipynb`. This
 matters: an `.ipynb` file embeds output cells, which means every run produces
